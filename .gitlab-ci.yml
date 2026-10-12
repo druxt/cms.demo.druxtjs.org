@@ -1,0 +1,58 @@
+stages:
+  - lint
+  - test
+
+variables:
+  PHP_APT_PACKAGES: 'git unzip libsqlite3-dev libzip-dev libicu-dev libpng-dev libjpeg62-turbo-dev libfreetype6-dev libonig-dev libxml2-dev'
+  PHP_EXTENSIONS: 'mbstring pdo_sqlite intl gd bcmath xml zip opcache'
+
+lint:private:
+  stage: lint
+  image: node:22
+  interruptible: true
+  script:
+    - node scripts/lint-private-refs.mjs
+
+lint:yaml:
+  stage: lint
+  image: python:3-slim
+  interruptible: true
+  script:
+    - pip install yamllint -q
+    - 'yamllint -d "{extends: default, rules: {line-length: {max: 200, level: warning}, document-start: disable}}" .gitlab-ci.yml .lagoon.yml docker-compose.yml'
+
+lint:shell:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  interruptible: true
+  script:
+    - shellcheck drupal/.devtools/demo-reset drupal/.devtools/demo-snapshot
+
+# What Lagoon's post-rollout does, on SQLite: install Drupal CMS from the
+# Haven template, take the reset snapshot, reset to it, then check the site
+# answers with its sample content.
+test:provision:
+  stage: test
+  image: php:8.3
+  interruptible: true
+  cache:
+    paths:
+      - drupal/vendor/
+  before_script:
+    - apt-get update -yqq
+    - apt-get install -yqq $PHP_APT_PACKAGES
+    - docker-php-ext-configure gd --with-freetype --with-jpeg
+    - docker-php-ext-install $PHP_EXTENSIONS
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --version=2.10.2
+  script:
+    - cd drupal
+    # Not --strict: Drupal CMS itself requires canvas_translate at @alpha.
+    - composer validate
+    - COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev --no-interaction --no-progress
+    - .devtools/provision
+    - .devtools/demo-snapshot
+    - .devtools/demo-reset
+    - (cd web && php -S 127.0.0.1:8080 .ht.router.php > /tmp/serve.log 2>&1 &)
+    - sleep 2
+    - for path in / /blog /projects /leadership /jsonapi; do curl -sf -o /dev/null "http://127.0.0.1:8080$path" || { echo "$path failed"; exit 1; }; done
+    - curl -sf http://127.0.0.1:8080/jsonapi/node/project | grep -q 'Restoring the outer reef'

@@ -1,0 +1,33 @@
+# Installed by composer.
+/vendor/
+/web/core/
+/web/modules/contrib/
+/web/themes/contrib/
+/web/profiles/contrib/
+/web/libraries/
+/recipes/
+/drush/Commands/contrib/
+
+# Generated or personal.
+/web/sites/*/settings.php
+/web/sites/*/settings.local.php
+/web/sites/*/files/
+/web/sites/simpletest/
+/.env
+
+# Scaffolded by composer from core, Drupal CMS and amazee.io's
+# drupal_integrations; the source of each is a package or assets/.
+/web/*
+!/web/modules/
+/web/modules/*
+!/web/modules/custom/
+/.drush-lock-update
+/drush/sites/lagoon.site.yml
+/drush/sites/.gitignore
+/web/sites/default/settings.lagoon.php
+/web/sites/default/default.development.services.yml
+/web/sites/default/all.settings.php
+/.editorconfig
+/.gitattributes
+# Written by Drupal into the sync directory.
+/config/sync/.htaccess

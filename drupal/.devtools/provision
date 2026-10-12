@@ -1,0 +1,151 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * @file
+ * Provision the site: a fresh Drupal CMS install from the Haven site
+ * template, with its sample content, then JSON:API and the Druxt module for
+ * the frontend to come.
+ *
+ * `settings.php` comes from amazee.io's drupal_integrations scaffold and is
+ * not committed. On Lagoon its settings.lagoon.php supplies the database,
+ * hash salt and reverse proxy. Anywhere else this script writes them to the
+ * gitignored settings.local.php. Project settings for every environment are
+ * in assets/all.settings.php.
+ */
+
+declare(strict_types=1);
+
+namespace DrupalCmsDemoDevTools;
+
+require_once __DIR__ . '/helpers.php';
+
+// -----------------------------------------------------------------------------
+// Variables.
+// -----------------------------------------------------------------------------
+
+$db_file = resolve_env_value('DB_FILE', '/tmp/cms-demo.sqlite')[0];
+
+// DRUPAL_DB_URL replaces the database entirely, which is how Lagoon points
+// this script at its MariaDB service. Unset, it is a local SQLite file.
+$db_url = resolve_env_value('DRUPAL_DB_URL', 'sqlite://localhost/' . $db_file)[0];
+$db = parse_database_url($db_url);
+
+// The site template, a recipe under ../recipes that composer installed.
+$template = resolve_env_value('DRUPAL_CMS_TEMPLATE', 'haven')[0];
+
+// -----------------------------------------------------------------------------
+
+echo '===============================' . PHP_EOL;
+echo '         🚀 PROVISION          ' . PHP_EOL;
+echo '===============================' . PHP_EOL;
+echo PHP_EOL;
+
+$lagoon = (bool) getenv('LAGOON');
+
+// Web requests answer 503 until provisioning ends (see all.settings.php). A
+// request served mid-install caches a container without the modules still to
+// come, and the final cache rebuild boots from it.
+$flag = 'web/sites/default/files/.provisioning';
+@mkdir(dirname($flag), 0775, TRUE);
+touch($flag);
+register_shutdown_function(static fn () => @unlink($flag));
+// A deploy that stops this task mid-install must not leave the site answering 503.
+if (function_exists('pcntl_async_signals')) {
+  pcntl_async_signals(TRUE);
+  foreach ([SIGINT, SIGTERM, SIGHUP] as $signal) {
+    pcntl_signal($signal, static fn () => exit(143));
+  }
+}
+
+TASK('Checking web/sites/default/settings.php.');
+$settings_php = 'web/sites/default/settings.php';
+if (!file_exists($settings_php)) {
+  FAIL('%s is missing. composer install scaffolds it from amazeeio/drupal_integrations.', $settings_php);
+}
+if (!str_contains((string) file_get_contents($settings_php), 'settings.local.php')) {
+  FAIL('%s does not include settings.local.php. Remove it and run composer install to scaffold it again.', $settings_php);
+}
+PASS('settings.php includes settings.lagoon.php and settings.local.php.');
+
+TASK('Checking the %s site template.', $template);
+if (!file_exists("recipes/$template/recipe.yml")) {
+  FAIL('recipes/%s/recipe.yml is missing. Require its package with composer first, so the installer does not run composer during the install.', $template);
+}
+PASS('Site template %s is installed.', $template);
+
+// The driver only. The URL carries a password on a hosted environment and
+// this output goes to a build log.
+TASK('Configuring the %s database.', $db['driver']);
+if ($db['driver'] === 'sqlite' && file_exists($db['database'])) {
+  unlink($db['database']);
+}
+// var_export() throughout, so a value containing quotes stays valid PHP.
+$connection = ['driver' => $db['driver'], 'database' => $db['database']];
+foreach (['username', 'password', 'host', 'port'] as $key) {
+  if ($db[$key] !== '') {
+    $connection[$key] = $db[$key];
+  }
+}
+$lines = '';
+foreach ($connection as $key => $value) {
+  $lines .= sprintf("  '%s' => %s,\n", $key, var_export($value, TRUE));
+}
+// On Lagoon settings.lagoon.php already has all of this, for every pod. A
+// salt written here would reach the cli pod alone.
+if (!$lagoon) {
+  file_put_contents('web/sites/default/settings.local.php', sprintf(
+    "<?php\n\n/**\n * @file\n * Provision-only override, written fresh each run by .devtools/provision.\n * Gitignored - never committed.\n */\n\n\$databases['default']['default'] = [\n%s];\n%s",
+    $lines,
+    sprintf("\n\$settings['hash_salt'] = %s;\n", var_export(bin2hex(random_bytes(32)), TRUE))
+  ));
+}
+PASS('%s database configured.', $db['driver']);
+
+// The template is a recipe, so site:install applies it directly: the way
+// Drupal CMS documents a command-line install, with the template's content.
+// Drush resolves the path from the web root.
+TASK('Running drush site:install with the %s site template.', $template);
+drush('site:install %s --account-name=admin --site-name=%s', ["../recipes/$template", 'Drupal CMS demo']);
+PASS('Site installed with the %s sample content.', $template);
+
+// The admin password from DRUPAL_ACCOUNT_PASS, read inside Drupal so it is
+// never on a command line a failed step would print. Unset, the installer's
+// random one stands and `drush user:login` is the way in.
+if (getenv('DRUPAL_ACCOUNT_PASS')) {
+  drush('php:eval %s', '$admin = user_load_by_name("admin"); $admin->setPassword(getenv("DRUPAL_ACCOUNT_PASS")); $admin->save();');
+}
+
+// Before any module installs. On Lagoon a cache service outlives the
+// reinstall, and plugin discovery would otherwise come from the old site.
+drush('cache:rebuild');
+
+// Automatic Updates and Project Browser change the codebase from the site.
+// The image is built once and the demo resets daily, so there is nothing for
+// them to update and nowhere for them to write.
+TASK('Removing the in-site updaters.');
+drush('pm:uninstall automatic_updates project_browser package_manager');
+PASS('Automatic Updates, Project Browser and Package Manager removed.');
+
+// The frontend to come reads the site over JSON:API, through the Druxt module.
+TASK('Enabling JSON:API and Druxt.');
+drush('pm:install jsonapi druxt');
+drush('role:perm:add anonymous %s', 'access druxt resources');
+PASS('JSON:API and Druxt enabled; anonymous can access Druxt resources.');
+
+// The template's search index starts empty after a command-line install.
+TASK('Indexing the sample content for search.');
+drush('search-api:index');
+PASS('Search index built.');
+
+TASK('Rebuilding caches.');
+drush('cache:rebuild');
+PASS('Caches rebuilt.');
+
+echo PHP_EOL;
+echo '===============================' . PHP_EOL;
+echo '   🚀 PROVISION COMPLETE  ✅  ' . PHP_EOL;
+echo '===============================' . PHP_EOL;
+echo PHP_EOL;
+echo 'Database: ' . $db['driver'] . ' (' . $db['database'] . ')' . PHP_EOL;
+echo PHP_EOL;

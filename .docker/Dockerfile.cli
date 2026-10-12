@@ -1,0 +1,13 @@
+FROM uselagoon/php-8.3-cli-drupal:26.8.1
+
+# composer.json first, so a dependency-only change does not invalidate the
+# layer that copies the rest of the site. The scaffold reads assets/ during
+# the install, so it comes too.
+COPY ./drupal/composer.* /app/
+COPY ./drupal/assets /app/assets
+RUN COMPOSER_MEMORY_LIMIT=-1 composer install --no-dev
+COPY ./drupal/ /app
+RUN mkdir -p -v -m775 /app/web/sites/default/files
+
+# Define where the Drupal Root is located
+ENV WEBROOT=web

@@ -1,0 +1,44 @@
+docker-compose-yaml: 'docker-compose.yml'
+
+# The Lagoon project keeps its old name until amazee.io renames it.
+project: demo-api-druxtjs-org
+
+# Drupal CMS on its own for now: the Haven site template with its sample
+# content, rendered by Drupal. It answers on the demo's main domain until a
+# Druxt frontend joins and takes it; api. is Drupal's for good, so its address
+# never moves.
+environments:
+  main:
+    routes:
+      - nginx:
+          - api.cms.demo.druxtjs.org
+          - cms.demo.druxtjs.org
+    cronjobs:
+      - name: drush cron
+        schedule: '*/15 * * * *'
+        command: drush cron
+        service: cli
+      # The demo back to its fresh site once a day, whatever visitors left in
+      # it. 16:00 UTC is the small hours in Melbourne, where it is run from.
+      - name: reset the demo
+        schedule: '0 16 * * *'
+        command: /app/.devtools/demo-reset
+        service: cli
+
+tasks:
+  post-rollout:
+    # Drupal CMS installs from its site template, which brings the sample
+    # content. DRUPAL_DB_URL points provision at the MariaDB service instead
+    # of its local SQLite default.
+    - run:
+        name: drupal install
+        command: >-
+          DRUPAL_DB_URL="mysql://${MARIADB_USERNAME}:${MARIADB_PASSWORD}@${MARIADB_HOST}:${MARIADB_PORT}/${MARIADB_DATABASE}"
+          .devtools/provision
+        service: cli
+
+    # The fresh site, kept, so .devtools/demo-reset can put it back in seconds.
+    - run:
+        name: snapshot the fresh demo
+        command: .devtools/demo-snapshot
+        service: cli
